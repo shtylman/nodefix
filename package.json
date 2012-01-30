@@ -5,15 +5,15 @@
   "homepage": "https://github.com/falconair/nodefix",
   "author": "Shahbaz Chaudhary <shahbazc@gmail.com>",
   "main": "fix",
-  "directories": {
-    "handlers": "./handlers"
-  },
   "dependencies":{
-    "pipe": "0.0.2",
-    "underscore": "1.1.6",
-    "underscore.string": "1.1.4"
+      "xml2js": "0.1.13"
   },
-  "engines": { "node": ">=0.4.8"},
+  "devDependencies":{
+      "nodeunit": ">=0.6.4"
+  },
+  "scripts": {
+      "test": "nodeunit test"
+  },
   "repository": {
     "type": "git",
     "url": "git://github.com/falconair/nodefix.git"

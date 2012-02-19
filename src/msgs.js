@@ -1,5 +1,6 @@
 // builtin
 var fs = require('fs');
+var util = require('util');
 
 // 3rd party
 var xml2js = require('xml2js');
@@ -18,11 +19,16 @@ parser.parseString(data, function (err, result) {
     var field_map = {
     };
 
+    // map of number to id
+    var rev_field_map = {
+    };
+
     result.fields.field.forEach(function(field) {
         var number = field['@'].number;
         var name = field['@'].name;
 
         field_map[name] = number;
+        rev_field_map[number] = name;
     });
 
     result.messages.message.forEach(function(message) {
@@ -55,8 +61,22 @@ parser.parseString(data, function (err, result) {
 
         msg_t.prototype = new Msg();
 
-        module.exports[name] = msg_t;
-        module.exports.types[type] = msg_t;
+        msg_t.prototype.toString = function() {
+            var self = this;
+            var res = '';
+
+            // this handles printing custom fields which we don't know the name of
+            var fields = Object.keys(self._fields);
+            fields.forEach(function(field_id) {
+                var val = self.get(field_id);
+                var name = field_id;
+                if (rev_field_map[field_id]) {
+                    name = rev_field_map[field_id];
+                }
+                res += name + '=' + val + ' ';
+            });
+            return res;
+        };
 
         if (!(message.field instanceof Array)) {
             message.field = [message.field];
@@ -74,5 +94,8 @@ parser.parseString(data, function (err, result) {
                 id: field_id,
             });
         });
+
+        module.exports[name] = msg_t;
+        module.exports.types[type] = msg_t;
     });
 });

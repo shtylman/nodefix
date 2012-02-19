@@ -29,14 +29,6 @@ var Msg = function() {
     // map of field number (as a string) to field value
     self._fields = {};
 
-    self.get = function(field_id) {
-        return self._fields[field_id];
-    };
-
-    self.set = function(field_id, value) {
-        self._fields[field_id] = value;
-    }
-
     self._define_field = function(field_id, name, opt) {
         var validator = (opt && opt.validator) ? opt.validator : function(v) { return v; };
         Object.defineProperty(self, name, {
@@ -65,6 +57,16 @@ var Msg = function() {
 
 // constants
 Msg.kFieldSeparator = String.fromCharCode(1);
+
+Msg.prototype.get = function(field_id) {
+    var self = this;
+    return self._fields[field_id];
+};
+
+Msg.prototype.set = function(field_id, value) {
+    var self = this;
+    self._fields[field_id] = value;
+}
 
 Msg.prototype.serialize = function() {
     var self = this;

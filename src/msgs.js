@@ -34,6 +34,7 @@ parser.parseString(data, function (err, result) {
         // new message class
         var msg_t = function() {
             var self = this;
+            Msg.call(self);
 
             self.MsgType = type;
             self.name = name;

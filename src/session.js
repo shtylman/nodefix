@@ -17,22 +17,12 @@ var Session = function(is_acceptor, opt) {
     self.target_comp_id = opt.target;
 
     // heartbeat interval
-    this.isLoggedIn = false;
+    this.is_logged_in = false;
 
     var dispatcher = self.dispatcher = new events.EventEmitter();
 
     // message handlers
     dispatcher.on('Logon', function(msg) {
-
-        if (self.is_acceptor) {
-            /*
-            // TODO Authenticate connection
-            // provides a way to intercept authentication
-            self.authenticate(msg, function(err, auth) {
-                // TODO
-            });
-            */
-        }
 
         var heartbt_milli = +msg.HeartBtInt * 1000;
         if (isNaN(heartbt_milli)) {
@@ -127,15 +117,40 @@ var Session = function(is_acceptor, opt) {
 
 Session.prototype = new events.EventEmitter();
 
+Session.prototype.reject = function(orig_msg, reason) {
+    var self = this;
+
+    var msg = new Msgs.Reject();
+    msg.RefSeqNum = orig_msg.MsgSeqNum;
+    msg.RefMsgType = orig_msg.MsgType;
+    msg.Text = reason;
+    return self.send(msg);
+};
+
 // process incoming message
 Session.prototype.incoming = function(msg) {
     var self = this;
 
     self.last_timestamp = Date.now();
 
+    // TODO logoout message should be handled properly
+    if (msg.MsgType === '5') {
+        // if we sent the logout, wait for confirmation
+        // if we received the logout, then send confirmation back and end session
+        self.dispatcher.emit(msg.name, msg);
+
+        // set new expected seq
+        self.incoming_seq_num = msg_seq_num + 1;
+
+        // send to app once we are done
+        self.emit('message', msg);
+        self.emit(msg.name, msg);
+        return;
+    }
+
     // check logged on
     if (self.is_logged_in === false && msg.MsgType !== 'A') {
-        return self.reject('Expected Logon message, got: ' + msg.MsgType, msg.MsgSeqNum);
+        return self.reject(msg, 'Expected Logon message, got: ' + msg.MsgType);
     }
 
     // check sequence gap
@@ -146,9 +161,7 @@ Session.prototype.incoming = function(msg) {
         var resend_request = new Msgs.ResendRequest();
         resend_request.BeginSeqNo = self.incomingSeqNum;
         resend_request.EndSeqNo = 0;
-        self.send(resend_request);
-        return;
-
+        return self.send(resend_request);
     } else if (msg_seq_num < self.incoming_seq_num) {
         // reversal
         if (msg.PossDupFlag === 'Y') {
@@ -156,7 +169,30 @@ Session.prototype.incoming = function(msg) {
             return;
         }
 
-        return self.reject('sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num, msg.MsgSeqNum);
+        return self.reject(msg, 'sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num);
+    }
+
+    if (self.is_acceptor && self.login_auth && msg.MsgType === 'A') {
+        // if there is an error, we cannot log the user in
+        return self.login_auth(msg, function(err) {
+            if (err) {
+                // terminate session
+                return self.logout(err.message);
+            }
+
+            // TODO this is a copy of below, doesn't need to be
+            // might be better to have some sort of middleware I think
+
+            // good to login
+            self.dispatcher.emit(msg.name, msg);
+
+            // set new expected seq
+            self.incoming_seq_num = msg_seq_num + 1;
+
+            // send to app once we are done
+            self.emit('message', msg);
+            self.emit(msg.name, msg);
+        });
     }
 
     self.dispatcher.emit(msg.name, msg);
@@ -178,14 +214,6 @@ Session.prototype.send = function(msg) {
     msg.TargetCompID = self.target_comp_id;
     msg.SendingTime = new Date();
 
-    if(self.is_logged_in === false && msg.MsgType === 'A') {
-
-        //==Sync sequence numbers from data store
-        var seqnums = self.getSeqNums(self.senderCompID, self.targetCompID);
-        self.incomingSeqNum = seqnums.incomingSeqNum;
-        self.outgoingSeqNum = seqnums.outgoingSeqNum;
-    }
-
     ++self.outgoing_seq_num;
     self.timeOfLastOutgoing = new Date().getTime();
 
@@ -195,18 +223,24 @@ Session.prototype.send = function(msg) {
 
 /// logon to a client session
 /// 'logon' event fired when session is active
-Session.prototype.logon = function() {
+Session.prototype.logon = function(additional_fields) {
     var self = this;
     var msg = new Msgs.Logon();
     msg.HeartBtInt = 10;
     msg.EncryptMethod = 0;
+
+    var ids = Object.keys(additional_fields);
+    ids.forEach(function(id) {
+        msg.set(id, additional_fields[id]);
+    });
+
     self.send(msg);
 };
 
 /// send logoff message and wait for confirmation
-Session.prototype.logoff = function(reason) {
+Session.prototype.logout = function(reason) {
     var self = this;
-    var msg = new Msgs.Logoff();
+    var msg = new Msgs.Logout();
     msg.Text = reason;
     self.send(msg);
 };

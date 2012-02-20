@@ -34,7 +34,12 @@ function Client(opt) {
         decoder.on('message', function(msg) {
             // filter to appropriate session
 
-            var counter = msg.TargetCompID;
+            // TODO this should be a combination of target comp id
+            // and sender comp id, that was we can have multiple sessions
+            // to the same target comp with different sender comp on same connection
+            // remember the sender here is actually the target_comp_id when we created
+            // the session
+            var counter = msg.SenderCompID;
             var session = sessions[counter];
             if (!session) {
                 // no such session

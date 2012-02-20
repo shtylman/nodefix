@@ -10,23 +10,28 @@ var FixFrameDecoder = require('./frame_decoder');
 var Session = require('./session');
 
 var Server = function(opt) {
-     var self = this;
-     events.EventEmitter.call(self);
+    var self = this;
+    events.EventEmitter.call(self);
 
-     var sessions = {};
-     var server = net.createServer(function(stream) {
+    // sessions are per server to prevent name clashing
+    // the same server will not accept the same sender comp id twice
+    var sessions = {};
+
+    var server = net.createServer(function(stream) {
         var decoder = new FixFrameDecoder(stream);
+
 
         // new fix message
         decoder.on('message', function(msg) {
             // check if already have a session
             // if new session
-            var session_id = msg.TargetCompID;
+            var session_id = msg.SenderCompID;
             var session = sessions[session_id];
             if (!session) {
                 session = sessions[session_id] = new Session(true, {
-                    sender: msg.SenderCompID,
-                    target: msg.TargetCompID
+                    // flipped because we are now the sender
+                    sender: msg.TargetCompID,
+                    target: msg.SenderCompID,
                 });
 
                 // when session is done, remove it from
@@ -60,24 +65,24 @@ var Server = function(opt) {
         stream.on('end', function() {
             // anything?
         })
-     });
+    });
 
-     server.on('error', function(err) {
-         self.emit('error', err);
-     });
+    server.on('error', function(err) {
+        self.emit('error', err);
+    });
 
-     self.listen = function(port, host, cb) {
-         self.port = port;
-         server.listen(port, host, cb);
-         return this;
-     };
+    self.listen = function(port, host, cb) {
+        self.port = port;
+        server.listen(port, host, cb);
+        return this;
+    };
 
-     self.close = function(cb) {
-         if (cb) {
-             server.on('close', cb);
-         }
-         server.close();
-     };
+    self.close = function(cb) {
+        if (cb) {
+            server.on('close', cb);
+        }
+        server.close();
+    };
 }
 
 Server.prototype = new events.EventEmitter;

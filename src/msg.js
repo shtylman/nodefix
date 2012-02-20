@@ -135,8 +135,11 @@ Msg.parse = function(raw) {
         if (kv.length === 0) {
             return;
         }
-        var kvpair = kv.split('=');
-        fix[kvpair[0]] = kvpair[1];
+
+        // a field could have an = in it, don't see why not
+        var components = kv.split('=');
+        var id = components.shift();
+        fix[id] = components.join('=');
     });
 
     // TODO validate header

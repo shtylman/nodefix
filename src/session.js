@@ -229,10 +229,12 @@ Session.prototype.logon = function(additional_fields) {
     msg.HeartBtInt = 10;
     msg.EncryptMethod = 0;
 
-    var ids = Object.keys(additional_fields);
-    ids.forEach(function(id) {
-        msg.set(id, additional_fields[id]);
-    });
+    if (additional_fields) {
+        var ids = Object.keys(additional_fields);
+        ids.forEach(function(id) {
+            msg.set(id, additional_fields[id]);
+        });
+    }
 
     self.send(msg);
 };

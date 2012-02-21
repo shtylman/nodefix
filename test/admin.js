@@ -56,6 +56,33 @@ module.exports.logon = {
             });
         });
     },
+    spoof: function(test) {
+        var self = this;
+
+        var client2 = self.client2 = fix.createClient();
+        client2.on('connect', function() {
+            var session = client2.session('initiator', 'acceptor');
+
+            // trying to reuse a session on a different connection should boot us
+            session.logon();
+        });
+
+        // we expect to be disconnected by the server for trying to use an existing session
+        client2.on('end', function() {
+            test.done();
+        });
+
+        var client = self.client = fix.createClient();
+        client.on('connect', function() {
+            var session = client.session('initiator', 'acceptor');
+            session.on('logon', function() {
+                client2.connect(1234, 'localhost');
+            });
+
+            session.logon();
+        });
+        client.connect(1234, 'localhost');
+    },
     test_request: function(test) {
         var self = this;
         var client = self.client = fix.createClient();

@@ -43,6 +43,7 @@ var Msg = function() {
 
     self._define_field('49', 'SenderCompID');
     self._define_field('56', 'TargetCompID');
+    self._define_field('50', 'SenderSubID');
     self._define_field('35', 'MsgType');
     self._define_field('34', 'MsgSeqNum');
     self._define_field('52', 'SendingTime', {

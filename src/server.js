@@ -25,6 +25,15 @@ var Server = function(opt) {
         decoder.on('error', function(err) {
         });
 
+        // user has 30 seconds to establish any session, otherwise they are disconnected
+        var logon_timeout = setTimeout(function() {
+            stream.end();
+        }, 1000 * 30);
+
+        server.on('close', function() {
+            clearTimeout(logon_timeout);
+        });
+
         // new fix message
         decoder.on('message', function(msg) {
             // this is a huge problem
@@ -55,8 +64,15 @@ var Server = function(opt) {
                     delete sessions[session_id];
                 });
 
+                session.on('logon', function() {
+                    clearTimeout(logon_timeout);
+                });
+
                 stream.on('end', function() {
-                    // end the session
+                    session.end();
+                });
+
+                stream.on('close', function() {
                     session.end();
                 });
 
@@ -74,6 +90,8 @@ var Server = function(opt) {
                 // terminate immediately
                 return stream.end();
             }
+
+            // TODO check for other headers to be consistent?
 
             details.session.incoming(msg);
         });

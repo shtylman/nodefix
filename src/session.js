@@ -2,13 +2,14 @@
 
 var events = require('events');
 
+var Msg = require('./msg');
 var Msgs = require('./msgs');
 
 var Session = function(is_acceptor, opt) {
     var self = this;
 
-    self.incoming_seq_num = 0;
-    self.outgoing_seq_num = 0;
+    self.incoming_seq_num = 1;
+    self.outgoing_seq_num = 1;
 
     self.is_acceptor = is_acceptor;
     self.respond_to_logon = true;
@@ -16,18 +17,23 @@ var Session = function(is_acceptor, opt) {
     self.sender_comp_id = opt.sender;
     self.target_comp_id = opt.target;
 
+    // incoming messages need to be processed in the order they are received
+    self.msg_queue = [];
+
+    // TODO
+    self.confirm_logout = false;
+
     // heartbeat interval
-    this.is_logged_in = false;
+    self.is_logged_in = false;
 
-    var dispatcher = self.dispatcher = new events.EventEmitter();
+    // admin handlers
+    var admin = self.admin = {};
 
-    // message handlers
-    dispatcher.on('Logon', function(msg) {
-
+    admin.Logon = function(msg, next) {
         var heartbt_milli = +msg.HeartBtInt * 1000;
         if (isNaN(heartbt_milli)) {
             // send back invalid heartbeat
-            return;
+            return next(new Error('invalid heartbeat interval, must be numeric'));
         };
 
         // heatbeat handler
@@ -48,6 +54,7 @@ var Session = function(is_acceptor, opt) {
 
             // heartbeat time!
             if (currentTime - self.last_outgoing_time > heartbt_milli && self.sendHeartbeats) {
+                // send here, not next because it is an interval
                 self.send(new Msgs.Heartbeat());
             }
         }, heartbt_milli / 2); //End Set heartbeat mechanism==
@@ -68,11 +75,10 @@ var Session = function(is_acceptor, opt) {
         }
 
         self.emit('logon');
-    });
+        next();
+    };
 
-    // TODO
-    self.confirm_logout = false;
-    dispatcher.on('Logout', function(msg) {
+    admin.Logout = function(msg, next) {
         // we initiated the logout, wait for confirmation
         // send logout confirmation
         if (!self.confirm_logout) {
@@ -80,38 +86,83 @@ var Session = function(is_acceptor, opt) {
         }
 
         self.end();
-    });
+        next();
+    };
 
-    dispatcher.on('TestRequest', function(msg) {
+    admin.TestRequest = function(msg, next) {
         var heartbeat = new Msgs.Heartbeat();
         heartbeat.TestReqID = msg.TestReqID;
-        self.send(heartbeat);
-    });
+        return next(heartbeat);
+    };
 
-    dispatcher.on('ResendRequest', function(msg) {
-    });
+    admin.ResendRequest = function(msg, next) {
+        // TODO
+        next();
+    };
 
-    dispatcher.on('SequenceReset', function(msg) {
+    admin.SequenceReset = function(msg, next) {
         // check sequence gap
         var msg_seq_num = +msg.MsgSeqNum;
 
         // ignore gap fill
         if (msg.GapFillFlag === 'Y') {
             if (msg_seq_num < self.incoming_seq_num) {
-                throw new Error('SequenceReset may not decrement sequence numbers');
+                return next(new Error('SequenceReset may not decrement sequence numbers'));
             }
 
             // next number we are expecting
             self.incoming_seq_num = msg_seq_num + 1;
-            return;
+            return next();
         }
 
         var reset_num = +msg.NewSeqNum;
         if (reset_num < self.incoming_seq_num) {
-            throw new Error('SequenceReset may not decrement sequence numbers');
+            return next(new Error('SequenceReset may not decrement sequence numbers'));
         }
 
         self.incoming_seq_num = reset_num;
+    };
+
+    admin.Heartbeat = function(msg, next) {
+        next();
+    };
+
+    admin.Reject = function(msg, next) {
+        self.emit('error', new Error(msg.Text));
+        next();
+    };
+
+    // our admin handling
+    self.on('message', function(msg, next) {
+        self._process_incoming(msg, next);
+    });
+
+    // handle dispatching messages by name or rejecting if unsupported
+    self.on('message', function(msg, next) {
+        var listeners = self.listeners(msg.name).concat();
+        if (listeners.length === 0) {
+            // admin messages don't need to be handled by the app
+            if (['0', '1', '2', '3', '4', '5', 'A'].indexOf(msg.MsgType) >= 0) {
+                return next();
+            }
+            return next(new Error('unsupported message type: ' + msg.MsgType));
+        }
+
+        (function next_listener() {
+            var handler = listeners.shift();
+            if (!handler) {
+                return next();
+            }
+
+            handler(msg, function(result) {
+                if (result) {
+                    return next(result);
+                }
+
+                // next message handler
+                next_listener();
+            });
+        })();
     });
 };
 
@@ -131,78 +182,124 @@ Session.prototype.reject = function(orig_msg, reason) {
 Session.prototype.incoming = function(msg) {
     var self = this;
 
-    self.last_timestamp = Date.now();
-
-    // TODO logoout message should be handled properly
-    if (msg.MsgType === '5') {
-        // if we sent the logout, wait for confirmation
-        // if we received the logout, then send confirmation back and end session
-        self.dispatcher.emit(msg.name, msg);
-
-        // set new expected seq
-        self.incoming_seq_num = msg_seq_num + 1;
-
-        // send to app once we are done
-        self.emit('message', msg);
-        self.emit(msg.name, msg);
-        return;
+    // messages need to be processes in the order in which they are received
+    // it would be wrong to receive order A then order B and for some reason
+    // send order B to the matching engine before order A
+    if (self.processing) {
+        return self.msg_queue.push(msg);
     }
 
-    // check logged on
-    if (self.is_logged_in === false && msg.MsgType !== 'A') {
-        return self.reject(msg, 'Expected Logon message, got: ' + msg.MsgType);
+    self.processing = true;
+
+    var message_handlers = self.listeners('message').concat(); //cheap clone
+
+    function next_msg() {
+        self.processing = false;
+        var msg = self.msg_queue.shift();
+        if (!msg) {
+            return;
+        }
+        return self.incoming(msg);
+    }
+
+    // we do this because admin handlers should always run last
+    // this allows users to hookup their own 'message' handlers and have them always run before
+    message_handlers.push(function(msg, next) {
+        var admin_handler = self.admin[msg.name];
+        if (!admin_handler) {
+            return next();
+        }
+        admin_handler(msg, next);
+    });
+
+    (function next() {
+        var handler = message_handlers.shift();
+        if (!handler) {
+            // move on to the next message
+            return next_msg();
+        }
+
+        // checks that the handler actually returned in a reasonable amount of time
+        // TODO let user specify what to do in this case? skip to next message?
+        // this would be bad as we did not fully process this message but did mark expected sequence numbers
+        // maybe mark sequence number after message is done processing? I kinda like that more
+        var execution_timeout = setTimeout(function() {
+            self.emit('error', new Error('message handler taking too long to execute: ' + msg.toString()));
+        }, 1000);
+
+        handler(msg, function(result) {
+            clearTimeout(execution_timeout);
+
+            if (result instanceof Error) {
+                self.reject(msg, result.message);
+                return next_msg();
+            } else if (result instanceof Msg) {
+                self.send(result);
+                return next_msg();
+            }
+
+            // next message handler
+            next();
+        });
+    })();
+};
+
+Session.prototype._process_incoming = function(msg, cb) {
+    var self = this;
+
+    self.last_timestamp = Date.now();
+
+    if (self.reject_count === undefined) {
+        self.reject_count = 0;
+    }
+
+    if (msg.MsgType === '3') {
+        ++self.reject_count;
+    } else {
+        self.reject_count = 0;
+    }
+
+    if (self.reject_count >= 3) {
+        cb(new Error('too many rejects received, disconnecting'));
+        return self.logout();
+    }
+
+    // check logged on, only allow logon messages or reject messages
+    if (self.is_logged_in === false && msg.MsgType !== 'A' && msg.MsgType !== '3') {
+        return cb(new Error('Expected Logon message, got: ' + msg.MsgType));
     }
 
     // check sequence gap
     var msg_seq_num = +msg.MsgSeqNum;
+
+    if (isNaN(msg_seq_num)) {
+        return cb(new Error('MsgSeqNum must be numeric: ' + msg.MsgSeqNum));
+    }
 
     if (msg_seq_num > self.incoming_seq_num) {
         // request resend
         var resend_request = new Msgs.ResendRequest();
         resend_request.BeginSeqNo = self.incomingSeqNum;
         resend_request.EndSeqNo = 0;
-        return self.send(resend_request);
+        return cb(resend_request);
     } else if (msg_seq_num < self.incoming_seq_num) {
         // reversal
-        if (msg.PossDupFlag === 'Y') {
+        // TODO our callback mechanism needs a way to drop messages to the floor
+        // no reject, no send, no further processing
+        //if (msg.PossDupFlag === 'Y') {
             // ignore
-            return;
-        }
+            //return; // we can't do this, no other handlers will be called ever again
+        //}
 
-        return self.reject(msg, 'sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num);
+        return cb(new Error('sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num));
     }
-
-    if (self.is_acceptor && self.login_auth && msg.MsgType === 'A') {
-        // if there is an error, we cannot log the user in
-        return self.login_auth(msg, function(err) {
-            if (err) {
-                // terminate session
-                return self.logout(err.message);
-            }
-
-            // TODO this is a copy of below, doesn't need to be
-            // might be better to have some sort of middleware I think
-
-            // good to login
-            self.dispatcher.emit(msg.name, msg);
-
-            // set new expected seq
-            self.incoming_seq_num = msg_seq_num + 1;
-
-            // send to app once we are done
-            self.emit('message', msg);
-            self.emit(msg.name, msg);
-        });
-    }
-
-    self.dispatcher.emit(msg.name, msg);
 
     // set new expected seq
     self.incoming_seq_num = msg_seq_num + 1;
 
-    // send to app once we are done
-    self.emit('message', msg);
-    self.emit(msg.name, msg);
+    // message has passed basic tests, send to next level
+    // app then our admin handler
+    cb();
 };
 
 // send a message to the session
@@ -214,10 +311,11 @@ Session.prototype.send = function(msg) {
     msg.TargetCompID = self.target_comp_id;
     msg.SendingTime = new Date();
 
-    ++self.outgoing_seq_num;
     self.timeOfLastOutgoing = new Date().getTime();
 
-    msg.MsgSeqNum = self.outgoingSeqNum;
+    // increment the next outgoing
+    msg.MsgSeqNum = self.outgoing_seq_num++;
+
     self.emit('send', msg);
 };
 

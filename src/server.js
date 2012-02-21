@@ -13,26 +13,42 @@ var Server = function(opt) {
     var self = this;
     events.EventEmitter.call(self);
 
-    // sessions are per server to prevent name clashing
-    // the same server will not accept the same sender comp id twice
+    // map of session ids that are currently active
+    // the value in the map is an object with fields 'stream', and 'session'
+    // this is to ensure that only the connected stream is accessing the session
     var sessions = {};
 
     var server = net.createServer(function(stream) {
         var decoder = new FixFrameDecoder(stream);
 
+        // TODO disconnect the user after N failed decoder attempts?
+        decoder.on('error', function(err) {
+        });
 
         // new fix message
         decoder.on('message', function(msg) {
+            // this is a huge problem
+            // a person could technically connect with a spoofed SenderCompID
+            // and then be re-attached to the session of a previous person
+
             // check if already have a session
             // if new session
             var session_id = msg.SenderCompID;
-            var session = sessions[session_id];
-            if (!session) {
-                session = sessions[session_id] = new Session(true, {
+            var details = sessions[session_id];
+
+            // no session for this session id yet, create it
+            if (!details) {
+                session = new Session(true, {
                     // flipped because we are now the sender
                     sender: msg.TargetCompID,
                     target: msg.SenderCompID,
                 });
+
+                // see note above for session variable on why this is
+                details = sessions[session_id] = {
+                    stream: stream,
+                    session: session,
+                }
 
                 // when session is done, remove it from
                 session.on('end', function() {
@@ -53,7 +69,13 @@ var Server = function(opt) {
                 self.emit('session', session);
             }
 
-            session.incoming(msg);
+            // if the two streams are not the same, someone is trying to spoof us
+            if (details.stream !== stream) {
+                // terminate immediately
+                return stream.end();
+            }
+
+            details.session.incoming(msg);
         });
 
         // if no traffic for two minutes, kill connection

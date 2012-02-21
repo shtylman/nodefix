@@ -264,9 +264,29 @@ Session.prototype._process_incoming = function(msg, cb) {
         return self.logout();
     }
 
-    // check logged on, only allow logon messages or reject messages
-    if (self.is_logged_in === false && msg.MsgType !== 'A' && msg.MsgType !== '3') {
-        return cb(new Error('Expected Logon message, got: ' + msg.MsgType));
+    // acceptor requires first message to be a logon
+    if (self.is_acceptor) {
+        if (!self.is_logged_in && msg.MsgType !== 'A') {
+            cb(new Error('Expected Logon message, got: ' + msg.MsgType));
+
+            // session is terminated immediately
+            return self.end();
+        }
+    } else {
+        // initiator could receive a reject for the logon or maybe a logout?
+        // check logged on, only allow logon messages or reject messages
+        if (self.is_logged_in === false && msg.MsgType !== 'A') {
+            // TODO support trying to login again?
+
+            // if a reject, emit the error
+            if (msg.MsgType === '3') {
+                return cb('error', new Error(msg.Text));
+            }
+
+            cb(new Error('expecting logon message'));
+            return self.emit('error', new Error('expected logon message, got: ' + msg.MsgType));
+            self.end();
+        }
     }
 
     // check sequence gap
@@ -337,7 +357,7 @@ Session.prototype.logon = function(additional_fields) {
     self.send(msg);
 };
 
-/// send logoff message and wait for confirmation
+/// send logout message and wait for confirmation
 Session.prototype.logout = function(reason) {
     var self = this;
     var msg = new Msgs.Logout();

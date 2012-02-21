@@ -29,12 +29,22 @@ var server = fix.createServer({}, function(session) {
     });
 
     // a message has been received
-    session.on('message', function(msg) {
-        console.log(msg);
+    // calling next(new Error(reason)) will send a reject back to the counter party
+    session.on('message', function(msg, next) {
+        console.log(msg.toString());
+
+        // allows other handlers to be run and more messages to be processed
+        // if you forget to call this, no more incoming messages can be processed
+        next();
     });
 
     // specific FIX messages can be bound as events
-    session.on('NewOrderSingle', function(msg) {
+    // the next argument has the same behavior as with 'message'
+    // any app messages you do not handle will be rejected as unsupported messages
+    // admin messages are handled for you by the session
+    // if you want to send a response back to the user
+    // you can just call next(fix message) and it will be sent
+    session.on('NewOrderSingle', function(msg, next) {
 
         // new FIX messages can be created by name
         var execution = new Msgs.ExecutionReport();
@@ -43,7 +53,23 @@ var server = fix.createServer({}, function(session) {
         execution.OrderID = <some order id>
 
         // use session.send to send the message to the counter party
-        session.send(execution);
+        session.send(execution)
+        return next();
+
+        // or use the shorthand and just pass the outgoing message to next
+        // next is smart enough to detect error vs regular message and send accordingly
+        //return next(execution);
+    });
+
+    // using the handlers, you can easily perform login authentication
+    // just call next with an error and a reject will be sent for the logon
+    // call next with no argument to allow the logon
+    session.on('Logon', function(msg, next) {
+        if (!auth_good) {
+            return next(new Error('permission denied!')); // logon rejected
+        }
+
+        return next(); // logon ok
     });
 });
 server.listen(1234, "localhost", function(){});
@@ -68,15 +94,18 @@ client.on('connect', function() {
     var session = client.session('initiator', 'acceptor');
 
     // session object is the same as server session
-    // has same methods and events
+    // has same methods and events, see above for details
     session.on('logon', function() {
     });
 
-    session.on('ExecutionReport', function(msg) {
+    session.on('ExecutionReport', function(msg, next) {
 
         // access fields by name
         msg.Side;
         msg.Price;
+
+        // call next once done processing
+        next();
     });
 });
 ```
@@ -87,24 +116,3 @@ Not yet supported
 * Groups
 * Encryption
 
-License
-=======
-Copyright (C) 2011 by Shahbaz Chaudhary
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.

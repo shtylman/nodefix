@@ -56,6 +56,45 @@ module.exports.logon = {
             });
         });
     },
+    logout: function(test) {
+        var self = this;
+
+        // only when both sides have a logon event
+        // can the test be considered done
+        var count = 0;
+        var incr_session = function() {
+            if (++count === 4) {
+                test.done();
+            }
+        };
+
+        var client = self.client = fix.createClient();
+        client.on('connect', function() {
+            var session = client.session('initiator', 'acceptor');
+            session.on('logon', function() {
+                incr_session();
+                session.logout();
+            });
+
+            session.on('logout', function() {
+                incr_session();
+            });
+
+            // login to the server
+            session.logon();
+        });
+        client.connect(1234, 'localhost');
+
+        self.server.on('session', function(session) {
+            session.on('logon', function() {
+                incr_session();
+            });
+
+            session.on('logout', function() {
+                incr_session();
+            });
+        });
+    },
     spoof: function(test) {
         var self = this;
 
@@ -120,8 +159,8 @@ module.exports.logon = {
                 test.false(); //invalid call specifically to fail test
             });
 
-            session.on('error', function(err) {
-                test.equal('testing login reject', err.message);
+            // a bad login will just terminate the session
+            session.on('end', function() {
                 test.done();
             });
 
@@ -135,8 +174,6 @@ module.exports.logon = {
                 test.false(); //invalid call specifically to fail test
             });
 
-            // if it is a logon message, we need way to reject the logon
-            // what does this mean for sequence numbers?
             session.on('Logon', function(msg, next) {
                 return next(new Error('testing login reject'));
             });
@@ -165,6 +202,67 @@ module.exports.logon = {
         self.server.on('session', function(session) {
             session.on('logon', function() {
             });
+        });
+    },
+    resend_request: function(test) {
+        var self = this;
+
+        var client = self.client = fix.createClient();
+        client.on('connect', function() {
+            var session = client.session('initiator', 'acceptor');
+            session.on('logon', function() {
+                var resend = new Msgs.ResendRequest();
+                resend.BeginSeqNo = '1';
+                resend.EndSeqNo = '10';
+                session.send(resend);
+            });
+
+            session.on('SequenceReset', function(msg, next) {
+                test.equal('10', msg.NewSeqNo);
+                test.equal('N', msg.GapFillFlag);
+                next();
+                test.done();
+            });
+
+            session.logon();
+        });
+        client.connect(1234, 'localhost');
+
+        self.server.on('session', function(session) {
+            session.on('logon', function() {
+            });
+        });
+    },
+    sequence_reset: function(test) {
+        var self = this;
+
+        var client = self.client = fix.createClient();
+        client.on('connect', function() {
+            var session = client.session('initiator', 'acceptor');
+            session.on('logon', function() {
+                var reset = new Msgs.SequenceReset();
+                reset.NewSeqNo = '10';
+                reset.GapFillFlag = 'N';
+                session.send(reset);
+
+                session.outgoing_seq_num = 10;
+                session.send(new Msgs.Heartbeat());
+            });
+
+            session.logon();
+        });
+        client.connect(1234, 'localhost');
+
+        self.server.on('session', function(session) {
+            session.on('logon', function() {
+            });
+
+            session.on('Heartbeat', function(msg, next) {
+                test.equal('10', msg.MsgSeqNum);
+                next();
+                test.done();
+            });
+
         });
     },
 };

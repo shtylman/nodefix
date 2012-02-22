@@ -64,6 +64,7 @@ var server = fix.createServer({}, function(session) {
     // using the handlers, you can easily perform login authentication
     // just call next with an error and a reject will be sent for the logon
     // call next with no argument to allow the logon
+    // if an error is passed to next, the session will be immediately disconnected
     session.on('Logon', function(msg, next) {
         if (!auth_good) {
             return next(new Error('permission denied!')); // logon rejected

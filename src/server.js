@@ -34,6 +34,8 @@ var Server = function(opt) {
             clearTimeout(logon_timeout);
         });
 
+        var session_count = 0;
+
         // new fix message
         decoder.on('message', function(msg) {
             // this is a huge problem
@@ -59,9 +61,18 @@ var Server = function(opt) {
                     session: session,
                 }
 
+                ++session_count;
+
                 // when session is done, remove it from
                 session.on('end', function() {
+                    --session_count;
                     delete sessions[session_id];
+
+                    // if the last session is over, end the connection
+                    if (session_count === 0) {
+                        clearTimeout(logon_timeout);
+                        stream.end();
+                    }
                 });
 
                 session.on('logon', function() {

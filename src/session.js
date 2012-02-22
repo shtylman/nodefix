@@ -20,9 +20,6 @@ var Session = function(is_acceptor, opt) {
     // incoming messages need to be processed in the order they are received
     self.msg_queue = [];
 
-    // TODO
-    self.confirm_logout = false;
-
     // heartbeat interval
     self.is_logged_in = false;
 
@@ -79,14 +76,25 @@ var Session = function(is_acceptor, opt) {
     };
 
     admin.Logout = function(msg, next) {
-        // we initiated the logout, wait for confirmation
-        // send logout confirmation
-        if (!self.confirm_logout) {
+        // we initiated a logout and this is the response
+        if (self.logout_confirmation) {
+            clearTimeout(self.logout_confirmation);
+        } else {
+            // we got a logout request, respond
             self.send(new Msgs.Logout());
         }
 
-        self.end();
+        self.is_logged_in = false;
+        self.emit('logout');
+
+        // no more messages will be processed
+        // clear queue
+        self.msg_queue = [];
         next();
+
+        // we are getting a logout request
+        // respond accordingly
+        self.end();
     };
 
     admin.TestRequest = function(msg, next) {
@@ -96,31 +104,32 @@ var Session = function(is_acceptor, opt) {
     };
 
     admin.ResendRequest = function(msg, next) {
-        // TODO
-        next();
+        // TODO, currently just sends a sequence reset
+        var seq_reset = new Msgs.SequenceReset();
+        seq_reset.GapFillFlag = 'N';
+        seq_reset.NewSeqNo = msg.EndSeqNo;
+        return next(seq_reset);
     };
 
+    // note that for SeqReset - Reset the header MsgSeqNum is ignored
     admin.SequenceReset = function(msg, next) {
-        // check sequence gap
         var msg_seq_num = +msg.MsgSeqNum;
+        var reset_num = +msg.NewSeqNo;
 
-        // ignore gap fill
-        if (msg.GapFillFlag === 'Y') {
-            if (msg_seq_num < self.incoming_seq_num) {
-                return next(new Error('SequenceReset may not decrement sequence numbers'));
-            }
-
-            // next number we are expecting
-            self.incoming_seq_num = msg_seq_num + 1;
+        // gap fill, MsgSeqNum from header is not ignored
+        // sequence reversal should be ignored
+        if (msg.GapFillFlag === 'Y' && msg_seq_num < self.incoming_seq_num) {
+            // message should be discarded
             return next();
         }
 
-        var reset_num = +msg.NewSeqNum;
+        // cannot reset to less
         if (reset_num < self.incoming_seq_num) {
             return next(new Error('SequenceReset may not decrement sequence numbers'));
         }
 
         self.incoming_seq_num = reset_num;
+        next();
     };
 
     admin.Heartbeat = function(msg, next) {
@@ -231,6 +240,14 @@ Session.prototype.incoming = function(msg) {
             clearTimeout(execution_timeout);
 
             if (result instanceof Error) {
+                // if a logon message, session will be ended
+                // no more messages will be processed
+                if (msg.MsgType === 'A') {
+                    self.msg_queue = []
+                    next_msg();
+                    return self.end();
+                }
+
                 self.reject(msg, result.message);
                 return next_msg();
             } else if (result instanceof Msg) {
@@ -249,44 +266,9 @@ Session.prototype._process_incoming = function(msg, cb) {
 
     self.last_timestamp = Date.now();
 
-    if (self.reject_count === undefined) {
-        self.reject_count = 0;
-    }
-
-    if (msg.MsgType === '3') {
-        ++self.reject_count;
-    } else {
-        self.reject_count = 0;
-    }
-
-    if (self.reject_count >= 3) {
-        cb(new Error('too many rejects received, disconnecting'));
-        return self.logout();
-    }
-
-    // acceptor requires first message to be a logon
-    if (self.is_acceptor) {
-        if (!self.is_logged_in && msg.MsgType !== 'A') {
-            cb(new Error('Expected Logon message, got: ' + msg.MsgType));
-
-            // session is terminated immediately
-            return self.end();
-        }
-    } else {
-        // initiator could receive a reject for the logon or maybe a logout?
-        // check logged on, only allow logon messages or reject messages
-        if (self.is_logged_in === false && msg.MsgType !== 'A') {
-            // TODO support trying to login again?
-
-            // if a reject, emit the error
-            if (msg.MsgType === '3') {
-                return cb('error', new Error(msg.Text));
-            }
-
-            cb(new Error('expecting logon message'));
-            return self.emit('error', new Error('expected logon message, got: ' + msg.MsgType));
-            self.end();
-        }
+    // first message should always be a logon
+    if (!self.is_logged_in && msg.MsgType !== 'A') {
+        return cb(new Error('expected Logon message, got: ' + msg.MsgType));
     }
 
     // check sequence gap
@@ -296,14 +278,28 @@ Session.prototype._process_incoming = function(msg, cb) {
         return cb(new Error('MsgSeqNum must be numeric: ' + msg.MsgSeqNum));
     }
 
+    // SeqReset - Reset ignores message sequencing
+    // this will be handled by the session admin
+    if (msg.MsgType === '4' && (msg.GapFillFlag === undefined || msg.GapFillFlag === 'N')) {
+        return cb();
+    }
+
     if (msg_seq_num > self.incoming_seq_num) {
+        // clear incoming message queue for new messages from resend request
+        // TODO hang on to these messages?
+        self.msg_queue = [];
+
         // request resend
         var resend_request = new Msgs.ResendRequest();
         resend_request.BeginSeqNo = self.incomingSeqNum;
         resend_request.EndSeqNo = 0;
         return cb(resend_request);
     } else if (msg_seq_num < self.incoming_seq_num) {
-        // reversal
+        // From the fix spec:
+        // If the incoming message has a sequence number less than expected and the
+        // PossDupFlag is not set, it indicates a serious error. It is strongly
+        // recommended that the session be terminated and manual intervention be initiated.
+
         // TODO our callback mechanism needs a way to drop messages to the floor
         // no reject, no send, no further processing
         //if (msg.PossDupFlag === 'Y') {
@@ -311,7 +307,8 @@ Session.prototype._process_incoming = function(msg, cb) {
             //return; // we can't do this, no other handlers will be called ever again
         //}
 
-        return cb(new Error('sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num));
+        cb(new Error('sequence reversal; expecting ' + self.incoming_seq_num + ' got ' + msg_seq_num + '. terminating session'));
+        return self.end();
     }
 
     // set new expected seq
@@ -357,17 +354,30 @@ Session.prototype.logon = function(additional_fields) {
     self.send(msg);
 };
 
-/// send logout message and wait for confirmation
+/// initiate a logout sequence and subsequently end a session
 Session.prototype.logout = function(reason) {
     var self = this;
     var msg = new Msgs.Logout();
     msg.Text = reason;
     self.send(msg);
+
+    // if counter party was logged in, wait for their confirmation
+    if (self.is_logged_in) {
+        // if no confirmation after some interval, force session done
+        self.logout_confirmation = setTimeout(function() {
+            self.end();
+        }, 1000 * 30);
+    }
 };
 
 /// terminate the session
 Session.prototype.end = function() {
     var self = this;
+
+    // if there was an active session, terminate it
+    // logout should have done this for a clean shutdown
+    self.is_logged_in = false;
+
     self.emit('end');
 };
 

@@ -77,24 +77,32 @@ var Session = function(is_acceptor, opt) {
 
     admin.Logout = function(msg, next) {
         // we initiated a logout and this is the response
+        // we can terminate the session
+        // per the fix spec, the logout initiator is the one responsible for terminating
+        // the session
         if (self.logout_confirmation) {
             clearTimeout(self.logout_confirmation);
-        } else {
-            // we got a logout request, respond
-            self.send(new Msgs.Logout());
+
+            self.is_logged_in = false;
+            self.emit('logout');
+
+            // no more messages will be processed
+            // clear queue
+            self.msg_queue = [];
+            next();
+
+            // our session is done
+            return self.end();
         }
 
-        self.is_logged_in = false;
-        self.emit('logout');
+        // we got a logout request, respond
+        // this gives the counter party a chance to do perform resend requests
+        self.send(new Msgs.Logout());
 
-        // no more messages will be processed
-        // clear queue
-        self.msg_queue = [];
+        // TODO should resend requests be the only thing supported here?
+        // IE only allow admin messages after a logout confirmation
+
         next();
-
-        // we are getting a logout request
-        // respond accordingly
-        self.end();
     };
 
     admin.TestRequest = function(msg, next) {

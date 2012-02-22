@@ -63,7 +63,7 @@ module.exports.logon = {
         // can the test be considered done
         var count = 0;
         var incr_session = function() {
-            if (++count === 4) {
+            if (++count === 3) {
                 test.done();
             }
         };
@@ -76,6 +76,7 @@ module.exports.logon = {
                 session.logout();
             });
 
+            // when the server responds with a clean logout
             session.on('logout', function() {
                 incr_session();
             });
@@ -87,10 +88,6 @@ module.exports.logon = {
 
         self.server.on('session', function(session) {
             session.on('logon', function() {
-                incr_session();
-            });
-
-            session.on('logout', function() {
                 incr_session();
             });
         });

@@ -49,7 +49,7 @@ var Server = function(opt) {
 
             // no session for this session id yet, create it
             if (!details) {
-                session = new Session(true, {
+                var session = new Session(true, {
                     // flipped because we are now the sender
                     sender: msg.TargetCompID,
                     target: msg.SenderCompID,

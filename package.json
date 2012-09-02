@@ -11,7 +11,7 @@
       "mocha": ">=1.0.0"
   },
   "scripts": {
-      "test": "node test"
+      "test": "mocha test"
   },
   "repository": {
     "type": "git",

@@ -1,26 +1,10 @@
 /// fix message
 
+var moment = require('moment');
+
 // convert a date object into a fix formatted timestamp
 var getUTCTimeStamp = function(date){
-    function pad(n){ return n<10 ? '0' + n : n }
-
-    var str = date.getUTCFullYear()
-        + pad(date.getUTCMonth() + 1)
-        + pad(date.getUTCDate()) + '-'
-        + pad(date.getUTCHours()) + ':'
-        + pad(date.getUTCMinutes()) + ':'
-        + pad(date.getUTCSeconds());
-
-    var millis = date.getUTCMilliseconds();
-
-    // zero pad
-    if (millis < 10) {
-        millis = '00' + millis;
-    } else if (millis < 100) {
-        millis = '0' + millis;
-    }
-
-    return str + '.' + millis;
+    return moment(date).utc().format('YYYYMMDD-HH:mm:ss.SSS');
 }
 
 var Msg = function() {
